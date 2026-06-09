@@ -1,9 +1,7 @@
+opencv-python
+ultralytics
+pyserial
 pillow
 requests
-jupyter
 numpy
-pandas
-matplotlib
-seaborn
-graphviz
-Cython
+pyyaml

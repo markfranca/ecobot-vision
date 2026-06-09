@@ -10,88 +10,49 @@ annotations @ [tacodataset.org](http://tacodataset.org)
 
 
 <div align="center">
-  <div class="column">
-    <img src="https://raw.githubusercontent.com/wiki/pedropro/TACO/images/1.png" width="17%" hspace="3">
-    <img src="https://raw.githubusercontent.com/wiki/pedropro/TACO/images/2.png" width="17%" hspace="3">
-    <img src="https://raw.githubusercontent.com/wiki/pedropro/TACO/images/3.png" width="17%" hspace="3">
-    <img src="https://raw.githubusercontent.com/wiki/pedropro/TACO/images/4.png" width="17%" hspace="3">
-    <img src="https://raw.githubusercontent.com/wiki/pedropro/TACO/images/5.png" width="17%" hspace="3">
-  </div>
-</div>
-</br>
+  # ecobot-vision
 
-For convenience, annotations are provided in COCO format. Check the metadata here:
-http://cocodataset.org/#format-data
+  Projeto de visão computacional para detecção de lixo com YOLO, webcam e caminho futuro para ESP32-CAM e robô físico.
 
-TACO is still relatively small, but it is growing. Stay tuned!
+  ## Estrutura
 
-# Publications
+  - `data/`: anotações COCO e arquivos de origem do dataset
+  - `dataset/`: dataset preparado para YOLO (`train/`, `valid/`, `test/`)
+  - `scripts/`: download, conversão e split do dataset
+  - `src/`: treino e inferência
+  - `runs/`: saídas do YOLO, ignoradas pelo Git
 
-For more details check our paper: https://arxiv.org/abs/2003.06975
+  ## Dependências
 
-If you use this dataset and API in a publication, please cite us using: &nbsp;
-```
-@article{taco2020,
-    title={TACO: Trash Annotations in Context for Litter Detection},
-    author={Pedro F Proença and Pedro Simões},
-    journal={arXiv preprint arXiv:2003.06975},
-    year={2020}
-}
-```
+  ```bash
+  pip install -r requirements.txt
+  ```
 
-# News
-**December 20, 2019** - Added more 785 images and 2642 litter segmentations. <br/>
-**November 20, 2019** - TACO is officially open for new annotations: http://tacodataset.org/annotate
+  ## Fluxo recomendado
 
-# Getting started
+  1. Baixar ou preparar as imagens.
+  2. Converter anotações COCO para labels YOLO.
+  3. Separar o dataset em `train`, `valid` e `test`.
+  4. Gerar `data.yaml`.
+  5. Treinar o modelo e salvar `best.pt`.
+  6. Rodar inferência na webcam ou em outra câmera.
 
-### Requirements 
+  ## Scripts principais
 
-To install the required python packages simply type
-```
-pip3 install -r requirements.txt
-```
-Additionaly, to use ``demo.pynb``, you will also need [coco python api](https://github.com/cocodataset/cocoapi). You can get this using
-```
-pip3 install git+https://github.com/philferriere/cocoapi.git#subdirectory=PythonAPI
-```
+  - `scripts/download_dataset.py`: baixa imagens referenciadas pelo COCO.
+  - `scripts/convert_coco_to_yolo.py`: converte anotações COCO para labels YOLO.
+  - `scripts/split_dataset.py`: organiza `train/`, `valid/` e `test/`.
+  - `src/train.py`: treina o YOLO com o `data.yaml`.
+  - `src/detect_webcam.py`: executa o modelo na webcam local.
+  - `src/detect_camera.py`: executa o modelo em uma câmera genérica ou stream.
 
-### Download
+  ## Exemplo de uso
 
-To download the dataset images simply issue
-```
-python3 download.py
-```
-Alternatively, download from [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.3587843.svg)](https://doi.org/10.5281/zenodo.3587843)
+  ```bash
+  python scripts/download_dataset.py --annotations data/annotations.json --output-dir data
+  python scripts/convert_coco_to_yolo.py --annotations data/annotations.json --images-dir data --output-dir dataset
+  python scripts/split_dataset.py --dataset-root dataset
+  python src/train.py --data dataset/data.yaml --model yolov8n.pt
+  python src/detect_webcam.py --weights runs/detect/train/weights/best.pt
+  ```
 
-Our API contains a jupyter notebook ``demo.pynb`` to inspect the dataset and visualize annotations.
-
-**Unlabeled data**
-
-A list of URLs for both unlabeled and labeled images is now also provided in `data/all_image_urls.csv`.
-Each image contains one URL for each original image (second column) and one URL for a VGA-resized version (first column)
-for images hosted by Flickr. If you decide to annotate these images using other tools, please make them public and contact us so we can keep track.
-
-**Unofficial data**
-
-Annotations submitted via our website are added weekly to `data/annotations_unofficial.json`. These have not yet been been reviewed by us -- some may be inaccurate or have poor segmentations. 
-You can use the same command to download the respective images:
-```
-python3 download.py --dataset_path ./data/annotations_unofficial.json
-```
-
-### Trash Detection
-
-The implementation of [Mask R-CNN by Matterport](https://github.com/matterport/Mask_RCNN)  is included in ``/detector``
-with a few modifications. Requirements are the same. Before using this, the dataset needs to be split. You can either donwload our [weights and splits](https://github.com/pedropro/TACO/releases/tag/1.0) or generate these from scratch using the `split_dataset.py` script to generate 
-N random train, val, test subsets. For example, run this inside the directory `detector`:
-```
-python3 split_dataset.py --dataset_dir ../data
-```
-
-For further usage instructions, check ``detector/detector.py``.
-
-As you can see [here](http://tacodataset.org/stats), most of the original classes of TACO have very few annotations, therefore these must be either left out or merged together. Depending on the problem, ``detector/taco_config`` contains several class maps to target classes, which maintain the most dominant classes, e.g., Can, Bottles and Plastic bags. Feel free to make your own classes.
-
-<p align="center">
-<img src="https://raw.githubusercontent.com/wiki/pedropro/TACO/images/teaser.gif" width="75%"/></p>

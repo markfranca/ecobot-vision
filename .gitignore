@@ -1,1 +1,7 @@
 data/batch_*
+runs/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
