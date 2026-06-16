@@ -10,7 +10,7 @@ from ultralytics import YOLO
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Detect litter in a webcam stream.")
-    parser.add_argument("--weights", default="runs/detect/train/weights/best.pt", help="Path to trained weights.")
+    parser.add_argument("--weights", default="runs/trash-detector/weights/best.pt", help="Path to trained weights.")
     parser.add_argument("--camera", type=int, default=0, help="Webcam index.")
     parser.add_argument("--imgsz", type=int, default=640, help="Inference image size.")
     parser.add_argument("--conf", type=float, default=0.25, help="Confidence threshold.")
