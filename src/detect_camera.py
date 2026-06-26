@@ -17,13 +17,21 @@ from ultralytics import YOLO
 
 
 FRAME_SIZES = {
-    "qqvga": 1,   # 160x120
-    "qvga": 5,    # 320x240
-    "vga": 8,     # 640x480
-    "svga": 9,    # 800x600
-    "xga": 10,    # 1024x768
-    "sxga": 12,   # 1280x1024
-    "uxga": 13,   # 1600x1200
+    "96x96": 0,
+    "qqvga": 1,    # 160x120
+    "128x128": 2,
+    "qcif": 3,     # 176x144
+    "hqvga": 4,    # 240x176
+    "240x240": 5,
+    "qvga": 6,     # 320x240
+    "cif": 8,      # 400x296
+    "hvga": 9,     # 480x320
+    "vga": 10,     # 640x480
+    "svga": 11,    # 800x600
+    "xga": 12,     # 1024x768
+    "hd": 13,      # 1280x720
+    "sxga": 14,    # 1280x1024
+    "uxga": 15,    # 1600x1200
 }
 
 
@@ -166,7 +174,10 @@ def parse_framesize(value: str) -> int:
 
 def build_control_url(stream_url: str, variable: str, value: int) -> str:
     parsed = urlparse(stream_url)
-    return f"{parsed.scheme}://{parsed.netloc}/control?var={variable}&val={value}"
+    netloc = parsed.hostname or parsed.netloc
+    if parsed.port and parsed.port != 81:
+        netloc = f"{netloc}:{parsed.port}"
+    return f"{parsed.scheme}://{netloc}/control?var={variable}&val={value}"
 
 
 def looks_like_esp32_stream(source: str) -> bool:

@@ -1,4 +1,4 @@
-path: /home/marcus-voicecorp/Projetos/ecobot-vision/dataset
+path: /home/mark/pessoal/ecobot-vision/dataset
 train: train/images
 val: valid/images
 test: test/images

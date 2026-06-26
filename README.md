@@ -56,27 +56,61 @@ python src\detect_webcam.py --weights yolov8n.pt
 Use o endpoint MJPEG do firmware CameraWebServer:
 
 ```powershell
-python src\detect_camera.py --source http://IP_DO_ESP32/stream --framesize qvga --weights yolov8n.pt --imgsz 320 --conf 0.35
+python src\detect_camera.py --source http://IP_DO_ESP32:81/stream --framesize qvga --weights yolov8n.pt --imgsz 320 --conf 0.35
 ```
 
 Para usar seu modelo treinado:
 
 ```powershell
-python src\detect_camera.py --source http://IP_DO_ESP32/stream --framesize qvga --weights runs\trash-detector\weights\best.pt --imgsz 320 --conf 0.25
+python src\detect_camera.py --source http://IP_DO_ESP32:81/stream --framesize qvga --weights runs\trash-detector\weights\best.pt --imgsz 320 --conf 0.25
+```
+
+No Linux, com sua ESP32-CAM atual:
+
+```bash
+python3 src/detect_camera.py --source http://172.16.100.182:81/stream --framesize qvga --weights yolov8n.pt --imgsz 320 --conf 0.35
 ```
 
 O `detect_camera.py` reconhece automaticamente URLs no formato
-`http://IP_DO_ESP32/stream` e usa um leitor MJPEG de baixa latencia com buffer
+`http://IP_DO_ESP32:81/stream` e usa um leitor MJPEG de baixa latencia com buffer
 de 1 frame e reconexao automatica. Tambem e possivel forcar esse modo com
 `--esp32`.
 
 Presets aceitos em `--framesize`:
 
 ```text
-qqvga, qvga, vga, svga, xga, sxga, uxga
+96x96, qqvga, 128x128, qcif, hqvga, 240x240, qvga, cif, hvga, vga, svga, xga, hd, sxga, uxga
 ```
 
-Voce tambem pode passar o valor numerico diretamente, por exemplo `--framesize 8`.
+Voce tambem pode passar o valor numerico diretamente, por exemplo `--framesize 6`
+para QVGA ou `--framesize 10` para VGA.
+
+## ESP32-CAM + servo
+
+Fluxo recomendado para o robo coletor:
+
+1. ESP32-CAM transmite imagem.
+2. Notebook roda YOLO/OpenCV.
+3. Arduino ou ESP32 separado controla o servo.
+
+Guia completo:
+
+```text
+docs/robot_servo_vision.md
+```
+
+Teste sem servo fisico:
+
+```bash
+source .venv/bin/activate
+python src/detect_and_control_servo.py --source http://172.16.100.182:81/stream --weights yolov8n.pt --conf 0.60 --cooldown 3 --servo-mode none
+```
+
+Com servo por Serial USB:
+
+```bash
+python src/detect_and_control_servo.py --source http://172.16.100.182:81/stream --weights yolov8n.pt --conf 0.60 --cooldown 3 --servo-mode serial --serial-port /dev/ttyUSB0
+```
 
 ## Scripts principais
 
@@ -86,3 +120,4 @@ Voce tambem pode passar o valor numerico diretamente, por exemplo `--framesize 8
 - `src/train.py`: treina o YOLO com o `data.yaml`.
 - `src/detect_webcam.py`: executa o modelo na webcam local.
 - `src/detect_camera.py`: executa o modelo em camera generica, stream ou ESP32-CAM.
+- `src/detect_and_control_servo.py`: detecta lixo e envia comando ao servo.
