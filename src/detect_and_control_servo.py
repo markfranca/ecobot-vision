@@ -1,4 +1,4 @@
-"""Detect litter from ESP32-CAM frames and trigger a servo controller."""
+"""Detect litter from ESP32-CAM frames and trigger the ESP32-CAM servo route."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import argparse
 import logging
 import time
 from dataclasses import dataclass
-from typing import Protocol
 
 import cv2
 import requests
@@ -15,64 +14,18 @@ from ultralytics import YOLO
 from detect_camera import build_reader
 
 
-class ServoController(Protocol):
-    def trigger(self, command: str, angle: int) -> None:
-        ...
+ESP32_IP = "192.168.0.87"
+SERVO_URL = f"http://{ESP32_IP}/servo"
 
-    def close(self) -> None:
-        ...
+CONFIDENCE_THRESHOLD = 0.60
+COOLDOWN_SECONDS = 3
+SERVO_TIMEOUT_SECONDS = 3
 
+ESP32_STREAM_URL = f"http://{ESP32_IP}:81/stream"
+CLASSES_LIXO_COCO = {"bottle", "cup", "bowl", "can", "plastic bag", "cardboard"}
+CLASSES_MARCADORAS_COCO = {"person", "car", "dog", "bottle", "cup", "bowl"}
 
-class DryRunServoController:
-    def trigger(self, command: str, angle: int) -> None:
-        logging.info("Dry run servo command: %s angle=%s", command, angle)
-
-    def close(self) -> None:
-        return
-
-
-class SerialServoController:
-    def __init__(self, port: str, baudrate: int, timeout: float) -> None:
-        import serial
-
-        self._serial = serial.Serial(port, baudrate=baudrate, timeout=timeout)
-        time.sleep(2.0)
-        self._serial.reset_input_buffer()
-
-    def trigger(self, command: str, angle: int) -> None:
-        message = command if command else str(angle)
-        self._serial.write(f"{message}\n".encode("ascii"))
-        self._serial.flush()
-
-        response = self._serial.readline().decode("ascii", errors="ignore").strip()
-        if response:
-            logging.info("Servo serial response: %s", response)
-
-    def close(self) -> None:
-        self._serial.close()
-
-
-class HttpServoController:
-    def __init__(self, base_url: str, timeout: float) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
-
-    def trigger(self, command: str, angle: int) -> None:
-        if command in {"LEFT", "CENTER", "RIGHT", "PICK", "OPEN"}:
-            endpoint = command.lower()
-            url = f"{self.base_url}/{endpoint}"
-            response = requests.get(url, timeout=self.timeout)
-        else:
-            response = requests.get(
-                f"{self.base_url}/servo",
-                params={"angle": angle},
-                timeout=self.timeout,
-            )
-        response.raise_for_status()
-        logging.info("Servo HTTP response: %s", response.text.strip())
-
-    def close(self) -> None:
-        return
+ultimo_acionamento = 0.0
 
 
 @dataclass(frozen=True)
@@ -97,7 +50,52 @@ def parse_classes(value: str) -> set[str]:
     return {item.strip().lower() for item in value.split(",") if item.strip()}
 
 
-def find_best_detection(result, frame_width: int, trash_classes: set[str]) -> Detection | None:
+def get_class_name(names, class_id: int) -> str:
+    if isinstance(names, dict):
+        return str(names.get(class_id, class_id))
+    if 0 <= class_id < len(names):
+        return str(names[class_id])
+    return str(class_id)
+
+
+def acionar_servo() -> bool:
+    global ultimo_acionamento
+
+    agora = time.time()
+
+    if agora - ultimo_acionamento < COOLDOWN_SECONDS:
+        return False
+
+    try:
+        resposta = requests.get(SERVO_URL, timeout=SERVO_TIMEOUT_SECONDS)
+        print(f"Servo acionado: {resposta.text}")
+        ultimo_acionamento = agora
+        return True
+    except requests.RequestException as erro:
+        print(f"Erro ao acionar servo: {erro}")
+        return False
+
+
+def using_coco_model(model: YOLO) -> bool:
+    names = model.names.values() if isinstance(model.names, dict) else model.names
+    model_classes = {str(name).lower() for name in names}
+    return len(model_classes) >= 70 and CLASSES_MARCADORAS_COCO.issubset(model_classes)
+
+
+def resolve_trash_classes(args: argparse.Namespace, model: YOLO) -> set[str]:
+    if args.trash_classes:
+        return parse_classes(args.trash_classes)
+    if using_coco_model(model):
+        return CLASSES_LIXO_COCO
+    return set()
+
+
+def find_best_detection(
+    result,
+    frame_width: int,
+    trash_classes: set[str],
+    confidence_threshold: float,
+) -> Detection | None:
     boxes = result.boxes
     if boxes is None or len(boxes) == 0:
         return None
@@ -108,8 +106,10 @@ def find_best_detection(result, frame_width: int, trash_classes: set[str]) -> De
     for box in boxes:
         confidence = float(box.conf[0])
         class_id = int(box.cls[0])
-        class_name = str(names.get(class_id, class_id))
+        class_name = get_class_name(names, class_id)
 
+        if confidence < confidence_threshold:
+            continue
         if trash_classes and class_name.lower() not in trash_classes:
             continue
 
@@ -128,53 +128,31 @@ def find_best_detection(result, frame_width: int, trash_classes: set[str]) -> De
     return best
 
 
-def build_servo_controller(args: argparse.Namespace) -> ServoController:
-    if args.servo_mode == "none":
-        return DryRunServoController()
-    if args.servo_mode == "serial":
-        if not args.serial_port:
-            raise ValueError("--serial-port is required when --servo-mode serial")
-        return SerialServoController(args.serial_port, args.baudrate, args.servo_timeout)
-    if args.servo_mode == "http":
-        if not args.servo_url:
-            raise ValueError("--servo-url is required when --servo-mode http")
-        return HttpServoController(args.servo_url, args.servo_timeout)
-    raise ValueError(f"Unknown servo mode: {args.servo_mode}")
-
-
-def command_for_detection(detection: Detection, use_direction: bool) -> str:
-    return detection.direction if use_direction else "PICK"
-
-
 def main() -> None:
+    global COOLDOWN_SECONDS, SERVO_TIMEOUT_SECONDS, SERVO_URL
+
     parser = argparse.ArgumentParser(
         description="Detect litter from an ESP32-CAM stream and trigger a servo."
     )
-    parser.add_argument("--source", default="http://172.16.100.182:81/stream", help="ESP32-CAM stream URL.")
+    parser.add_argument("--source", default=ESP32_STREAM_URL, help="ESP32-CAM stream URL.")
     parser.add_argument("--weights", default="yolov8n.pt", help="YOLO weights path.")
     parser.add_argument("--imgsz", type=int, default=320, help="YOLO inference image size.")
-    parser.add_argument("--conf", type=float, default=0.60, help="Minimum detection confidence.")
+    parser.add_argument("--conf", type=float, default=CONFIDENCE_THRESHOLD, help="Minimum detection confidence.")
     parser.add_argument("--device", default=None, help="Device identifier, for example cpu or cuda:0.")
     parser.add_argument("--framesize", default="qvga", help="ESP32-CAM frame size preset.")
     parser.add_argument("--timeout", type=float, default=5.0, help="ESP32-CAM HTTP timeout.")
     parser.add_argument("--reconnect-delay", type=float, default=1.0, help="ESP32-CAM reconnect delay.")
     parser.add_argument("--esp32", action="store_true", help="Force the ESP32-CAM MJPEG reader.")
-    parser.add_argument("--cooldown", type=float, default=3.0, help="Seconds between servo triggers.")
-    parser.add_argument("--servo-angle", type=int, default=90, help="Servo angle for PICK command.")
-    parser.add_argument("--servo-mode", choices=("none", "serial", "http"), default="serial")
-    parser.add_argument("--serial-port", help="Serial port, for example /dev/ttyUSB0 or COM3.")
-    parser.add_argument("--baudrate", type=int, default=115200, help="Serial baudrate.")
-    parser.add_argument("--servo-url", help="HTTP servo controller URL, for example http://192.168.0.80.")
-    parser.add_argument("--servo-timeout", type=float, default=2.0, help="Servo command timeout.")
+    parser.add_argument("--cooldown", type=float, default=COOLDOWN_SECONDS, help="Seconds between servo triggers.")
+    parser.add_argument("--servo-url", default=SERVO_URL, help="ESP32-CAM servo URL, for example http://192.168.0.80/servo.")
+    parser.add_argument("--servo-timeout", type=float, default=SERVO_TIMEOUT_SECONDS, help="Servo HTTP timeout.")
     parser.add_argument(
         "--trash-classes",
         default="",
-        help="Comma-separated class names to accept. Empty means any detected class is accepted.",
-    )
-    parser.add_argument(
-        "--send-direction",
-        action="store_true",
-        help="Send LEFT/CENTER/RIGHT based on object position instead of PICK.",
+        help=(
+            "Comma-separated class names to accept. Empty uses COCO trash classes "
+            "for COCO models and any class for custom trash models."
+        ),
     )
     parser.add_argument("--no-display", action="store_true", help="Run without an OpenCV window.")
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
@@ -185,11 +163,13 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
-    trash_classes = parse_classes(args.trash_classes)
+    COOLDOWN_SECONDS = args.cooldown
+    SERVO_TIMEOUT_SECONDS = args.servo_timeout
+    SERVO_URL = args.servo_url
+
     model = YOLO(args.weights)
+    trash_classes = resolve_trash_classes(args, model)
     reader = build_reader(args)
-    servo = build_servo_controller(args)
-    last_trigger_at = 0.0
 
     try:
         while True:
@@ -205,18 +185,14 @@ def main() -> None:
                 device=args.device,
                 verbose=False,
             )[0]
-            detection = find_best_detection(result, frame.shape[1], trash_classes)
+            detection = find_best_detection(result, frame.shape[1], trash_classes, args.conf)
 
-            now = time.monotonic()
-            if detection and now - last_trigger_at >= args.cooldown:
-                command = command_for_detection(detection, args.send_direction)
-                servo.trigger(command, args.servo_angle)
-                last_trigger_at = now
+            if detection:
+                acionar_servo()
                 logging.info(
-                    "Detected %s with %.2f confidence, command=%s",
+                    "Detected trash class %s with %.2f confidence",
                     detection.class_name,
                     detection.confidence,
-                    command,
                 )
 
             if not args.no_display:
@@ -224,7 +200,7 @@ def main() -> None:
                 if detection:
                     cv2.putText(
                         annotated_frame,
-                        f"{detection.class_name} {detection.confidence:.2f} {detection.direction}",
+                        f"{detection.class_name} {detection.confidence:.2f}",
                         (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.8,
@@ -236,7 +212,6 @@ def main() -> None:
                 if key in (ord("q"), 27):
                     break
     finally:
-        servo.close()
         reader.release()
         cv2.destroyAllWindows()
 
