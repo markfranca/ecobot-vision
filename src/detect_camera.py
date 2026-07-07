@@ -16,6 +16,24 @@ import requests
 from ultralytics import YOLO
 
 
+ESP32_IP = "192.168.x.x"
+SERVO_URL = f"http://{ESP32_IP}/servo"
+SERVO_COOLDOWN_SECONDS = 4.0
+
+TRASH_CLASSES = [
+    "bottle",
+    "cup",
+    "plastic bag",
+    "bag",
+    "can",
+    "paper",
+    "cardboard",
+    "carton",
+    "trash",
+    "garbage",
+    "litter",
+]
+
 FRAME_SIZES = {
     "96x96": 0,
     "qqvga": 1,    # 160x120
@@ -185,6 +203,59 @@ def looks_like_esp32_stream(source: str) -> bool:
     return parsed.scheme in {"http", "https"} and parsed.path.rstrip("/") == "/stream"
 
 
+def normalize_class_name(value: str) -> str:
+    return " ".join(value.strip().lower().replace("_", " ").replace("-", " ").split())
+
+
+def is_trash_class(class_name: str) -> bool:
+    normalized_name = normalize_class_name(class_name)
+    normalized_trash_classes = [normalize_class_name(value) for value in TRASH_CLASSES]
+    return any(
+        trash_class == normalized_name or trash_class in normalized_name
+        for trash_class in normalized_trash_classes
+    )
+
+
+def get_class_name(names, class_id: int) -> str:
+    if isinstance(names, dict):
+        return names.get(class_id, str(class_id))
+
+    if isinstance(names, (list, tuple)) and 0 <= class_id < len(names):
+        return str(names[class_id])
+
+    return str(class_id)
+
+
+def get_detected_trash_classes(result) -> set[str]:
+    if result.boxes is None or result.boxes.cls is None:
+        return set()
+
+    names = result.names
+    detected_trash_classes: set[str] = set()
+
+    for class_id in result.boxes.cls.tolist():
+        class_name = get_class_name(names, int(class_id))
+        if is_trash_class(class_name):
+            detected_trash_classes.add(class_name)
+
+    return detected_trash_classes
+
+
+def call_servo(servo_url: str, detected_classes: set[str]) -> None:
+    class_list = ", ".join(sorted(detected_classes)) or "lixo"
+    print(f"[DEBUG] Lixo detectado: {class_list}")
+    print(f"[DEBUG] Chamando rota do servo: {servo_url}")
+
+    try:
+        response = requests.get(servo_url, timeout=2)
+        response.raise_for_status()
+        print(f"[OK] Rota /servo chamada com sucesso. Status HTTP: {response.status_code}")
+        logging.info("Rota do servo chamada com sucesso: %s | Classes: %s", servo_url, class_list)
+    except requests.RequestException as exc:
+        print(f"[ERRO] Falha ao chamar a ESP32-CAM: {exc}")
+        logging.error("Erro ao chamar a ESP32-CAM em %s: %s", servo_url, exc)
+
+
 def build_reader(args: argparse.Namespace) -> Esp32MjpegReader | OpenCvReader:
     source = parse_source(args.source)
     use_esp32_reader = args.esp32 or (
@@ -223,6 +294,8 @@ def main() -> None:
     parser.add_argument("--framesize", help="ESP32-CAM framesize preset or numeric value, for example qvga or 8.")
     parser.add_argument("--timeout", type=float, default=5.0, help="ESP32-CAM HTTP timeout in seconds.")
     parser.add_argument("--reconnect-delay", type=float, default=1.0, help="Delay between ESP32-CAM reconnect attempts.")
+    parser.add_argument("--servo-url", default=SERVO_URL, help="ESP32-CAM servo endpoint.")
+    parser.add_argument("--servo-cooldown", type=float, default=SERVO_COOLDOWN_SECONDS, help="Minimum seconds between servo calls.")
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
     args = parser.parse_args()
 
@@ -233,6 +306,7 @@ def main() -> None:
 
     model = YOLO(args.weights)
     reader = build_reader(args)
+    last_servo_call = 0.0
 
     try:
         while True:
@@ -248,6 +322,14 @@ def main() -> None:
                 device=args.device,
                 verbose=False,
             )[0]
+
+            detected_trash_classes = get_detected_trash_classes(result)
+            if detected_trash_classes:
+                now = time.monotonic()
+                if now - last_servo_call >= args.servo_cooldown:
+                    call_servo(args.servo_url, detected_trash_classes)
+                    last_servo_call = now
+
             annotated_frame = result.plot()
 
             cv2.imshow("ecobot-vision", annotated_frame)
