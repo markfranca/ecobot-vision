@@ -6,10 +6,15 @@ import argparse
 import logging
 import time
 from dataclasses import dataclass
+from typing import Optional
 
 import cv2
-import serial
 from ultralytics import YOLO
+
+try:
+    import serial
+except ImportError:  # pragma: no cover - depends on local environment
+    serial = None
 
 from detect_camera import build_reader
 
@@ -76,6 +81,11 @@ def acionar_servo_serial(serial_bridge: serial.Serial) -> bool:
     except serial.SerialException as erro:
         logging.error("Erro ao enviar comando SERVO pela serial: %s", erro)
         return False
+
+
+def acionar_servo_none() -> bool:
+    logging.info("Servo desativado por --servo-mode none")
+    return True
 
 
 def using_coco_model(model: YOLO) -> bool:
@@ -146,6 +156,12 @@ def main() -> None:
     parser.add_argument("--reconnect-delay", type=float, default=1.0, help="ESP32-CAM reconnect delay.")
     parser.add_argument("--esp32", action="store_true", help="Force the ESP32-CAM MJPEG reader.")
     parser.add_argument("--cooldown", type=float, default=COOLDOWN_SECONDS, help="Seconds between servo triggers.")
+    parser.add_argument(
+        "--servo-mode",
+        default="serial",
+        choices=("serial", "none"),
+        help="Servo control mode. Use serial to send commands over USB or none to disable servo output.",
+    )
     parser.add_argument("--serial-port", default=SERIAL_PORT, help="Serial port connected to the ESP32-CAM bridge.")
     parser.add_argument("--baudrate", type=int, default=BAUDRATE, help="Serial baud rate.")
     parser.add_argument(
@@ -167,14 +183,26 @@ def main() -> None:
 
     COOLDOWN_SECONDS = args.cooldown
 
-    try:
-        serial_bridge = serial.Serial(args.serial_port, args.baudrate, timeout=1)
-        logging.info("Serial port opened on %s at %d baud", args.serial_port, args.baudrate)
-        time.sleep(2)
-        logging.info("Serial bridge ready after reset wait")
-    except serial.SerialException as erro:
-        logging.error("Erro ao abrir porta serial %s: %s", args.serial_port, erro)
-        return
+    serial_bridge: Optional[serial.Serial] = None
+    if args.servo_mode == "serial":
+        if serial is None:
+            logging.error("pyserial is not installed; install requirements to use --servo-mode serial")
+            return
+        try:
+            serial_bridge = serial.Serial(args.serial_port, args.baudrate, timeout=1)
+            logging.info("Serial port opened on %s at %d baud", args.serial_port, args.baudrate)
+            time.sleep(2)
+            logging.info("Serial bridge ready after reset wait")
+        except serial.SerialException as erro:
+            logging.error("Erro ao abrir porta serial %s: %s", args.serial_port, erro)
+            return
+
+    def trigger_servo() -> bool:
+        if args.servo_mode == "none":
+            return acionar_servo_none()
+        if serial_bridge is None:
+            return False
+        return acionar_servo_serial(serial_bridge)
 
     reader = None
 
@@ -200,7 +228,7 @@ def main() -> None:
             detection = find_best_detection(result, frame.shape[1], trash_classes, args.conf)
 
             if detection:
-                acionar_servo_serial(serial_bridge)
+                trigger_servo()
                 logging.info(
                     "Detected trash class %s with %.2f confidence",
                     detection.class_name,
@@ -225,7 +253,8 @@ def main() -> None:
     finally:
         if reader is not None:
             reader.release()
-        serial_bridge.close()
+        if serial_bridge is not None:
+            serial_bridge.close()
         cv2.destroyAllWindows()
 
 

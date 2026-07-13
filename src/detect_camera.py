@@ -78,9 +78,12 @@ class Esp32MjpegReader:
     def set_framesize(self, value: str) -> None:
         framesize = parse_framesize(value)
         control_url = build_control_url(self.config.stream_url, "framesize", framesize)
-        response = self._session.get(control_url, timeout=self.config.timeout_seconds)
-        response.raise_for_status()
-        logging.info("ESP32-CAM framesize set to %s", framesize)
+        try:
+            response = self._session.get(control_url, timeout=self.config.timeout_seconds)
+            response.raise_for_status()
+            logging.info("ESP32-CAM framesize set to %s", framesize)
+        except requests.RequestException as exc:
+            logging.warning("Could not set ESP32-CAM framesize via %s: %s", control_url, exc)
 
     def _reader_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -174,9 +177,7 @@ def parse_framesize(value: str) -> int:
 
 def build_control_url(stream_url: str, variable: str, value: int) -> str:
     parsed = urlparse(stream_url)
-    netloc = parsed.hostname or parsed.netloc
-    if parsed.port and parsed.port != 81:
-        netloc = f"{netloc}:{parsed.port}"
+    netloc = parsed.netloc or parsed.hostname or ""
     return f"{parsed.scheme}://{netloc}/control?var={variable}&val={value}"
 
 
