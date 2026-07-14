@@ -1,4 +1,4 @@
-"""Detect litter from ESP32-CAM frames and trigger the ESP32-CAM servo route."""
+"""Detect litter from ESP32-CAM frames and trigger a servo over serial."""
 
 from __future__ import annotations
 
@@ -6,23 +6,29 @@ import argparse
 import logging
 import time
 from dataclasses import dataclass
+from typing import Optional
 
 import cv2
-import requests
 from ultralytics import YOLO
+
+try:
+    import serial
+except ImportError:  # pragma: no cover - depends on local environment
+    serial = None
 
 from detect_camera import build_reader
 
 
-ESP32_IP = "192.168.0.87"
-SERVO_URL = f"http://{ESP32_IP}/servo"
+SERIAL_PORT = "COM5"  # vou alterar conforme minha porta
+BAUDRATE = 115200
+SERVO_COOLDOWN = 5
 
 CONFIDENCE_THRESHOLD = 0.60
-COOLDOWN_SECONDS = 3
-SERVO_TIMEOUT_SECONDS = 3
+COOLDOWN_SECONDS = SERVO_COOLDOWN
 
-ESP32_STREAM_URL = f"http://{ESP32_IP}:81/stream"
-CLASSES_LIXO_COCO = {"bottle", "cup", "bowl", "can", "plastic bag", "cardboard"}
+ESP32_STREAM_URL = "http://192.168.0.87:81/stream"
+TRASH_CLASSES = {"bottle", "cup", "can", "plastic bag", "paper", "cardboard", "trash", "garbage"}
+COCO_TRASH_CLASSES = {"bottle", "cup", "bowl"}
 CLASSES_MARCADORAS_COCO = {"person", "car", "dog", "bottle", "cup", "bowl"}
 
 ultimo_acionamento = 0.0
@@ -58,22 +64,28 @@ def get_class_name(names, class_id: int) -> str:
     return str(class_id)
 
 
-def acionar_servo() -> bool:
+def acionar_servo_serial(serial_bridge: serial.Serial) -> bool:
     global ultimo_acionamento
 
-    agora = time.time()
+    agora = time.monotonic()
 
     if agora - ultimo_acionamento < COOLDOWN_SECONDS:
         return False
 
     try:
-        resposta = requests.get(SERVO_URL, timeout=SERVO_TIMEOUT_SECONDS)
-        print(f"Servo acionado: {resposta.text}")
+        serial_bridge.write(b"SERVO\n")
+        serial_bridge.flush()
+        logging.info("Comando SERVO enviado pela serial")
         ultimo_acionamento = agora
         return True
-    except requests.RequestException as erro:
-        print(f"Erro ao acionar servo: {erro}")
+    except serial.SerialException as erro:
+        logging.error("Erro ao enviar comando SERVO pela serial: %s", erro)
         return False
+
+
+def acionar_servo_none() -> bool:
+    logging.info("Servo desativado por --servo-mode none")
+    return True
 
 
 def using_coco_model(model: YOLO) -> bool:
@@ -83,11 +95,11 @@ def using_coco_model(model: YOLO) -> bool:
 
 
 def resolve_trash_classes(args: argparse.Namespace, model: YOLO) -> set[str]:
-    if args.trash_classes:
+    if args.trash_classes is not None:
         return parse_classes(args.trash_classes)
     if using_coco_model(model):
-        return CLASSES_LIXO_COCO
-    return set()
+        return COCO_TRASH_CLASSES
+    return TRASH_CLASSES
 
 
 def find_best_detection(
@@ -129,10 +141,10 @@ def find_best_detection(
 
 
 def main() -> None:
-    global COOLDOWN_SECONDS, SERVO_TIMEOUT_SECONDS, SERVO_URL
+    global COOLDOWN_SECONDS
 
     parser = argparse.ArgumentParser(
-        description="Detect litter from an ESP32-CAM stream and trigger a servo."
+        description="Detect litter from an ESP32-CAM stream and trigger a servo over serial."
     )
     parser.add_argument("--source", default=ESP32_STREAM_URL, help="ESP32-CAM stream URL.")
     parser.add_argument("--weights", default="yolov8n.pt", help="YOLO weights path.")
@@ -144,14 +156,20 @@ def main() -> None:
     parser.add_argument("--reconnect-delay", type=float, default=1.0, help="ESP32-CAM reconnect delay.")
     parser.add_argument("--esp32", action="store_true", help="Force the ESP32-CAM MJPEG reader.")
     parser.add_argument("--cooldown", type=float, default=COOLDOWN_SECONDS, help="Seconds between servo triggers.")
-    parser.add_argument("--servo-url", default=SERVO_URL, help="ESP32-CAM servo URL, for example http://192.168.0.80/servo.")
-    parser.add_argument("--servo-timeout", type=float, default=SERVO_TIMEOUT_SECONDS, help="Servo HTTP timeout.")
+    parser.add_argument(
+        "--servo-mode",
+        default="serial",
+        choices=("serial", "none"),
+        help="Servo control mode. Use serial to send commands over USB or none to disable servo output.",
+    )
+    parser.add_argument("--serial-port", default=SERIAL_PORT, help="Serial port connected to the ESP32-CAM bridge.")
+    parser.add_argument("--baudrate", type=int, default=BAUDRATE, help="Serial baud rate.")
     parser.add_argument(
         "--trash-classes",
-        default="",
+        default=None,
         help=(
-            "Comma-separated class names to accept. Empty uses COCO trash classes "
-            "for COCO models and any class for custom trash models."
+            "Comma-separated class names considered trash. If omitted, the script uses "
+            "COCO-compatible classes for COCO models and TRASH_CLASSES for custom models."
         ),
     )
     parser.add_argument("--no-display", action="store_true", help="Run without an OpenCV window.")
@@ -164,14 +182,36 @@ def main() -> None:
     )
 
     COOLDOWN_SECONDS = args.cooldown
-    SERVO_TIMEOUT_SECONDS = args.servo_timeout
-    SERVO_URL = args.servo_url
 
-    model = YOLO(args.weights)
-    trash_classes = resolve_trash_classes(args, model)
-    reader = build_reader(args)
+    serial_bridge: Optional[serial.Serial] = None
+    if args.servo_mode == "serial":
+        if serial is None:
+            logging.error("pyserial is not installed; install requirements to use --servo-mode serial")
+            return
+        try:
+            serial_bridge = serial.Serial(args.serial_port, args.baudrate, timeout=1)
+            logging.info("Serial port opened on %s at %d baud", args.serial_port, args.baudrate)
+            time.sleep(2)
+            logging.info("Serial bridge ready after reset wait")
+        except serial.SerialException as erro:
+            logging.error("Erro ao abrir porta serial %s: %s", args.serial_port, erro)
+            return
+
+    def trigger_servo() -> bool:
+        if args.servo_mode == "none":
+            return acionar_servo_none()
+        if serial_bridge is None:
+            return False
+        return acionar_servo_serial(serial_bridge)
+
+    reader = None
 
     try:
+        model = YOLO(args.weights)
+        trash_classes = resolve_trash_classes(args, model)
+        logging.info("Using trash classes: %s", ", ".join(sorted(trash_classes)))
+        reader = build_reader(args)
+
         while True:
             success, frame = reader.read()
             if not success or frame is None:
@@ -188,13 +228,12 @@ def main() -> None:
             detection = find_best_detection(result, frame.shape[1], trash_classes, args.conf)
 
             if detection:
-                acionar_servo()
+                trigger_servo()
                 logging.info(
                     "Detected trash class %s with %.2f confidence",
                     detection.class_name,
                     detection.confidence,
                 )
-
             if not args.no_display:
                 annotated_frame = result.plot()
                 if detection:
@@ -212,7 +251,10 @@ def main() -> None:
                 if key in (ord("q"), 27):
                     break
     finally:
-        reader.release()
+        if reader is not None:
+            reader.release()
+        if serial_bridge is not None:
+            serial_bridge.close()
         cv2.destroyAllWindows()
 
 
