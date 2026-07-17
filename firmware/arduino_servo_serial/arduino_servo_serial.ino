@@ -13,12 +13,12 @@ const unsigned long BUTTON_DEBOUNCE_MS = 50;
 // Altere para true para executar uma sequencia automaticamente ao ligar.
 const bool RUN_TEST_ON_STARTUP = false;
 
-const int BASE_HOME_ANGLE = 180;
-const int BASE_TURN_ANGLE = 0;
-const int ARM_HOME_ANGLE = 0;
-const int ARM_RAISED_ANGLE = 70;
-const int CLAW_HOME_ANGLE = 0;
-const int CLAW_OPEN_ANGLE = 80;
+const int BASE_HOME_ANGLE = 170;
+const int BASE_TURN_ANGLE = 10;
+const int ARM_HOME_ANGLE = 45;
+const int ARM_RAISED_ANGLE = 110;
+const int CLAW_HOME_ANGLE = 10;
+const int CLAW_OPEN_ANGLE = 50;
 
 const unsigned long ACTION_INTERVAL_MS = 500;
 
